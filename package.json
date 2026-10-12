@@ -1,0 +1,12 @@
+{
+  "name": "smart-wall-paint-visualizer",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "install:all": "npm install --prefix server && npm install --prefix client",
+    "dev:server": "npm run dev --prefix server",
+    "dev:client": "npm start --prefix client",
+    "build": "npm run build --prefix client",
+    "seed:admin": "npm run seed:admin --prefix server"
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.angular/
+out-tsc/
+.env
+server/media/*
+!server/media/.gitkeep
+npm-debug.log*
