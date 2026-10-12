@@ -7,6 +7,7 @@ A web-only MEAN stack app for testing paint colours on photos of your own rooms.
 - Node.js 20.19 or newer (Node 24 is supported)
 - npm
 - A MongoDB Atlas database and connection string
+- A Cloudinary account for room-photo storage
 
 ## Local setup
 
@@ -18,31 +19,80 @@ A web-only MEAN stack app for testing paint colours on photos of your own rooms.
 
 2. Create a MongoDB Atlas cluster and database user with read/write access only to the app database. Add your development IP to Atlas Network Access. Copy the Atlas connection string and replace its database name and URL-encode any special characters in the username/password.
 
-3. Copy `server/.env.example` to `server/.env` (PowerShell: `Copy-Item server/.env.example server/.env`). Generate a secret with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` and set that as `JWT_SECRET`. Set `MONGODB_URI`, a unique `ADMIN_EMAIL`, and an `ADMIN_PASSWORD` of at least 12 characters. Keep `.env` out of version control. For local development, the app-origin and cookie defaults work at `localhost:4200` and `localhost:4000`.
+3. In Cloudinary, open the **Dashboard** and copy your **Cloud name**, **API Key**, and **API Secret**. Treat the API Secret like a password; do not paste it into Angular/client settings or commit it to Git.
+4. Copy `server/.env.example` to `server/.env` (PowerShell: `Copy-Item server/.env.example server/.env`). Generate a secret with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` and set that as `JWT_SECRET`. Set `MONGODB_URI`, the three Cloudinary values (`CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`), a unique `ADMIN_EMAIL`, and an `ADMIN_PASSWORD` of at least 12 characters. Keep `.env` out of version control. For local development, the app-origin and cookie defaults work at `localhost:4200` and `localhost:4000`.
 
-4. Seed the administrator and starter colour palette:
+5. Seed the administrator and starter colour palette:
 
    ```sh
    npm run seed:admin
    ```
 
-5. Start the API and Angular app in separate terminals:
+6. Start the API and Angular app in separate terminals:
 
    ```sh
    npm run dev:server
    npm run dev:client
    ```
 
-6. Open [http://localhost:4200](http://localhost:4200) and sign in with the seeded administrator account, or create a member account.
+7. Open [http://localhost:4200](http://localhost:4200) and sign in with the seeded administrator account, or create a member account.
 
-The API listens on `http://localhost:4000`; `/api/health` reports only whether the service is alive. The Angular dev server proxies `/api` to port 4000 so the browser can use secure same-site cookies without cross-origin auth. Uploaded images go to `server/media` by default; `MEDIA_DIR` can point to another persistent local directory. Set `MAX_UPLOAD_MB` to change the upload limit and `CLIENT_ORIGIN` to a comma-separated list of exact browser origins if needed.
+The API listens on `http://localhost:4000`; `/api/health` reports only whether the service is alive. The Angular dev server proxies `/api` to port 4000 so the browser can use secure same-site cookies without cross-origin auth. Room photos upload to your Cloudinary account as authenticated assets; MongoDB stores only their Cloudinary identifier and project details. The API checks project ownership before it retrieves a photo and proxies image bytes to the browser. Set `MAX_UPLOAD_MB` to change the image size limit, `UPLOADS_PER_HOUR` to change the per-IP upload limit (default 10), and `CLIENT_ORIGIN` to a comma-separated list of exact browser origins if needed.
+
+## Deploy the client to Vercel and the API to Render
+
+These deployment files are included: `client/vercel.json` configures the Angular production build, API proxy, and SPA fallback; the root `render.yaml` describes the Express web service. The Vercel rewrite currently points at `https://smart-wall-paint-visualizer-api.onrender.com`. If Render assigns a different service hostname, update both API rewrite destinations in `client/vercel.json` to that exact `https://<service-name>.onrender.com` URL before deploying Vercel.
+
+### 1. Push the project to GitHub
+
+Push the project folder to a GitHub repository. Confirm `server/.env` is not committed; secrets belong in Render's environment settings.
+
+### 2. Get Cloudinary credentials
+
+1. Sign in to Cloudinary and open the **Dashboard**. Find **Cloud name**, **API Key**, and **API Secret** (the secret may be hidden until you reveal it).
+2. Keep the API Secret private. You will add all three values to Render in the next step; never put them in Vercel or in a `client` file.
+
+### 3. Deploy Express on Render
+
+1. In Render, create a **Blueprint** from the GitHub repository and use its root `render.yaml`, or create a Node web service manually with **Root Directory** `server`, **Build Command** `npm ci`, **Start Command** `npm start`, and **Health Check Path** `/api/health`.
+2. During Blueprint setup, provide your three Cloudinary values (`CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`) when Render asks for them. They are required before the API can start. Also set `MONGODB_URI` to the production Atlas connection string, `CLIENT_ORIGIN` to the Vercel domain you expect to use (for example `https://your-project.vercel.app`), and supply a unique `ADMIN_EMAIL` and `ADMIN_PASSWORD` of at least 12 characters. The Blueprint generates `JWT_SECRET`; retain it in Render and do not rotate it casually because rotation signs everyone out. Keep `NODE_ENV=production`, `COOKIE_SAME_SITE=Strict`, and `TRUST_PROXY=1` (the Blueprint includes these Render settings).
+3. Deploy and copy the service's actual `onrender.com` URL. If the service name was changed or had to be renamed, put this URL into both destinations in `client/vercel.json` and push that edit. `render.yaml` uses the Render-provided `PORT` and binds Express to `0.0.0.0`.
+4. In MongoDB Atlas, allow connections from the Render service's outbound IP addresses where available. Use a dedicated database user with access only to this app's database. A broad `0.0.0.0/0` Atlas allowlist is less restrictive and should be avoided when your Render plan exposes addresses you can allowlist.
+
+### 4. Check the Cloudinary connection
+
+1. In Render, open your API service, then **Environment**, and confirm those three Cloudinary values are saved. If you created a manual service rather than a Blueprint, add them here before deploying.
+2. Keep `MAX_UPLOAD_MB=20` and `UPLOADS_PER_HOUR=10` or change them to your needs. The API accepts JPG/PNG, verifies the file signature, requires photo ownership confirmation, and limits authenticated uploads to 10 per IP per hour by default. The limiter is per running API process; for a scaled multi-instance production service, use a shared rate-limit store.
+3. Save any changes and redeploy/restart the Render service. Its health endpoint should return `{"ok":true}`. The API uploads room photos directly to Cloudinary using private authenticated delivery, and streams them back only after checking the logged-in user's project access. Deleting a room also deletes its Cloudinary image.
+
+### 5. Deploy Angular on Vercel
+
+1. Import the same GitHub repository as a Vercel project and set **Root Directory** to `client`.
+2. The included `client/vercel.json` sets the production build command and Angular output directory (`dist/smart-wall-visualizer/browser`), proxies `/api` to Render, and falls back to `index.html` for the single-page app. No API URL environment variable is needed.
+3. Deploy Vercel, then set the Render `CLIENT_ORIGIN` to the exact production Vercel URL shown in Vercel's project domains. If you attach a custom domain, add that exact origin too (comma-separated) in Render and redeploy the API. Keep the Vercel rewrite on the same origin so the browser's HttpOnly and CSRF cookies remain first-party. Vercel preview URLs are different origins; add a preview URL to `CLIENT_ORIGIN` temporarily if you need to test sign-in from a preview deployment.
+4. In Vercel deployment settings, verify the project root is `client` and production builds use the committed `vercel.json`. The API health check should be available at `https://your-project.vercel.app/api/health` after both deploys finish.
+
+### 6. Seed the administrator
+
+After Render and Atlas are connected, run `npm run seed:admin` once using the production `MONGODB_URI`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` values from Render. You can run this from a trusted local checkout with those values temporarily set in `server/.env`, or from Render's Shell if available. Do not add production credentials to GitHub, and do not run the seed command on each deployment; it is a one-time setup (safe to rerun for the same administrator account and starter colours).
+
+### Image storage
+
+Images are stored in the Cloudinary account configured on the Render API, rather than Render's temporary filesystem. MongoDB stores the Cloudinary asset identifier and project metadata. Check your Cloudinary plan's storage and bandwidth limits in its dashboard. Vercel serves the frontend only and does not store uploaded photos.
+
+### Verify the deployment
+
+- Open `https://<vercel-domain>/api/health`; expect `{"ok":true}`.
+- Register a member and sign in; cookies should stay on the Vercel domain because `/api` is proxied.
+- Upload a JPG/PNG, refresh, open the room, save a paint trial, and check the admin screen using the seeded administrator.
+- If API calls return CORS errors, check that Render `CLIENT_ORIGIN` exactly matches the browser's production origin (scheme and hostname, no path or trailing slash). If the Vercel rewrite returns a 404/502, check the Render hostname in both `client/vercel.json` rewrite destinations and the Render service logs.
 
 ### Roles and palette access
 
 - New registrations receive the `user` role and can use every active palette colour.
 - The seeded administrator has the `admin` role and can manage palette shades, users, projects, and analytics. Use the admin screen to promote or demote other accounts; never expose an admin password in a browser or shared computer.
 
-The API applies a general 180-request/minute per-IP limit, 12 sign-in attempts per 15 minutes, and 6 registrations per hour. Limits return HTTP 429 with retry information. They are in-memory per API process; production must enforce shared limits at the edge or with Redis before running multiple replicas.
+The API applies a general 180-request/minute per-IP limit, 12 sign-in attempts per 15 minutes, 6 registrations per hour, and 10 authenticated image uploads per IP per hour by default. Limits return HTTP 429 with retry information. They are in-memory per API process; production must enforce shared limits at the edge or with Redis before running multiple replicas.
 
 ## Main flows
 

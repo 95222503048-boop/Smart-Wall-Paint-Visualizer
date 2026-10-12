@@ -1,16 +1,31 @@
 import { Router } from 'express';
 import multer from 'multer';
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import Project from '../models/Project.js';
 import Color from '../models/Color.js';
 import { authenticate } from '../middleware.js';
+import { rateLimit } from '../rate-limit.js';
+import cloudinary from '../cloudinary.js';
 
 const router = Router();
 const limit = Number(process.env.MAX_UPLOAD_MB || 20) * 1024 * 1024;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: limit, files: 1 } });
-const mediaRoot = path.resolve(process.env.MEDIA_DIR || './media');
+const uploadLimiter = rateLimit({ windowMs: 60 * 60_000, limit: Number(process.env.UPLOADS_PER_HOUR || 10), message: 'Upload limit reached. Please try again later.' });
+
+function uploadToCloudinary(buffer, publicId) {
+  return new Promise((resolve, reject) => {
+    cloudinary.uploader.upload_stream({
+      resource_type: 'image',
+      type: 'authenticated',
+      public_id: `smart-wall-visualizer/${publicId}`,
+      overwrite: false,
+      use_filename: false,
+      unique_filename: false,
+    }, (error, result) => error ? reject(error) : resolve(result)).end(buffer);
+  });
+}
 
 function validImage(buffer, mimetype) {
   if (mimetype === 'image/jpeg') return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
@@ -49,29 +64,31 @@ router.get('/:id/image', authenticate, async (req, res, next) => {
     const query = req.user.role === 'admin'
       ? { _id: req.params.id }
       : { _id: req.params.id, owner: req.user._id };
-    const project = await Project.findOne(query).select('originalUrl mimeType');
+    const project = await Project.findOne(query).select('cloudinaryPublicId mimeType');
     if (!project) return res.status(404).json({ message: 'Room photo not found.' });
-    const filename = path.basename(project.originalUrl);
-    res.type(project.mimeType).sendFile(path.join(mediaRoot, filename), (err) => {
-      if (err && !res.headersSent) next(err);
+    const signedUrl = cloudinary.utils.private_download_url(project.cloudinaryPublicId, project.mimeType === 'image/png' ? 'png' : 'jpg', {
+      type: 'authenticated',
+      expires_at: Math.floor(Date.now() / 1000) + 300
     });
+    const image = await fetch(signedUrl, { signal: AbortSignal.timeout(20_000) });
+    if (!image.ok || !image.body) return res.status(502).json({ message: 'The room photo could not be loaded from image storage.' });
+    res.type(project.mimeType);
+    try { await pipeline(Readable.fromWeb(image.body), res); }
+    catch (err) { if (!res.headersSent) next(err); else res.destroy(err); }
   } catch (err) { next(err); }
 });
 
-router.post('/upload', authenticate, upload.single('photo'), async (req, res, next) => {
-  let filePath;
+router.post('/upload', authenticate, uploadLimiter, upload.single('photo'), async (req, res, next) => {
+  let cloudinaryPublicId;
   try {
     if (req.body?.ownershipConfirmed !== 'true') return res.status(400).json({ message: 'Confirm that you own this room photo before uploading.' });
     if (!req.file || !validImage(req.file.buffer, req.file.mimetype)) return res.status(400).json({ message: 'Upload a valid JPG or PNG image.' });
-    await fs.mkdir(mediaRoot, { recursive: true });
-    const ext = req.file.mimetype === 'image/png' ? '.png' : '.jpg';
-    const filename = `${randomUUID()}${ext}`;
-    filePath = path.join(mediaRoot, filename);
-    await fs.writeFile(filePath, req.file.buffer, { flag: 'wx' });
+    const uploadedAsset = await uploadToCloudinary(req.file.buffer, `room-${randomUUID()}`);
+    cloudinaryPublicId = uploadedAsset.public_id;
     const project = await Project.create({
       owner: req.user._id,
       title: (typeof req.body.title === 'string' ? req.body.title : req.file.originalname.replace(/\.[^.]+$/, '')).slice(0, 120),
-      originalUrl: `/media/${filename}`,
+      cloudinaryPublicId,
       mimeType: req.file.mimetype,
       width: Number(req.body.width) || undefined,
       height: Number(req.body.height) || undefined,
@@ -79,7 +96,7 @@ router.post('/upload', authenticate, upload.single('photo'), async (req, res, ne
     });
     res.status(201).json(project);
   } catch (err) {
-    if (filePath) await fs.rm(filePath, { force: true }).catch(() => {});
+    if (cloudinaryPublicId) await cloudinary.uploader.destroy(cloudinaryPublicId, { resource_type: 'image', type: 'authenticated', invalidate: true }).catch(() => {});
     next(err);
   }
 });
@@ -163,10 +180,10 @@ router.post('/:id/trials/:trialId/feedback', authenticate, async (req, res, next
 
 router.delete('/:id', authenticate, async (req, res, next) => {
   try {
-    const project = await Project.findOneAndDelete({ _id: req.params.id, owner: req.user._id });
+    const project = await Project.findOne({ _id: req.params.id, owner: req.user._id });
     if (!project) return res.status(404).json({ message: 'Project not found.' });
-    const filename = path.basename(project.originalUrl);
-    await fs.rm(path.join(mediaRoot, filename), { force: true }).catch(() => {});
+    await cloudinary.uploader.destroy(project.cloudinaryPublicId, { resource_type: 'image', type: 'authenticated', invalidate: true });
+    await project.deleteOne();
     res.json({ ok: true });
   } catch (err) { next(err); }
 });

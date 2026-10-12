@@ -1,0 +1,19 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build -- --configuration production",
+  "outputDirectory": "dist/smart-wall-visualizer/browser",
+  "rewrites": [
+    {
+      "source": "/api",
+      "destination": "https://smart-wall-paint-visualizer-api.onrender.com/api"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "https://smart-wall-paint-visualizer-api.onrender.com/api/:path*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

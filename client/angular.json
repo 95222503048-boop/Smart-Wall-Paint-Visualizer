@@ -12,7 +12,7 @@
         "build": {
           "builder": "@angular-devkit/build-angular:application",
           "options": { "outputPath": "dist/smart-wall-visualizer", "index": "src/index.html", "browser": "src/main.ts", "polyfills": ["zone.js"], "tsConfig": "tsconfig.app.json", "assets": [{ "glob": "**/*", "input": "src/assets" }], "styles": ["src/styles.css"], "scripts": [] },
-          "configurations": { "production": { "budgets": [{"type": "anyComponentStyle","maximumWarning": "30kb","maximumError": "35kb"}, { "type": "anyComponentStyle", "maximumWarning": "30kb", "maximumError": "35kb" }], "outputHashing": "all" }, "development": { "optimization": false, "extractLicenses": false, "sourceMap": true } },
+          "configurations": { "production": { "budgets": [{"type": "anyComponentStyle","maximumWarning": "30kb","maximumError": "35kb"}, { "type": "anyComponentStyle", "maximumWarning": "30kb", "maximumError": "35kb" }], "outputHashing": "all", "optimization": { "fonts": { "inline": false } } }, "development": { "optimization": false, "extractLicenses": false, "sourceMap": true } },
           "defaultConfiguration": "production"
         },
         "serve": { "builder": "@angular-devkit/build-angular:dev-server", "configurations": { "production": { "buildTarget": "smart-wall-visualizer:build:production" }, "development": { "buildTarget": "smart-wall-visualizer:build:development" } }, "defaultConfiguration": "development" }

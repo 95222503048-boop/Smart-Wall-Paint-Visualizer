@@ -2,8 +2,6 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import mongoose from 'mongoose';
 import authRoutes from './routes/auth.js';
 import projectRoutes from './routes/projects.js';
@@ -12,23 +10,21 @@ import adminRoutes from './routes/admin.js';
 import { csrfProtection } from './middleware.js';
 import { rateLimit } from './rate-limit.js';
 
-const required = ['MONGODB_URI', 'JWT_SECRET'];
+const required = ['MONGODB_URI', 'JWT_SECRET', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'];
 for (const key of required) if (!process.env[key]) throw new Error(`${key} is required. Set it in server/.env.`);
 if (Buffer.byteLength(process.env.JWT_SECRET) < 32 || /replace-with|change-this/i.test(process.env.JWT_SECRET)) throw new Error('JWT_SECRET must be a unique random secret of at least 32 bytes.');
 if (process.env.COOKIE_SAME_SITE && !['Strict', 'Lax', 'None'].includes(process.env.COOKIE_SAME_SITE)) throw new Error('COOKIE_SAME_SITE must be Strict, Lax, or None.');
 if (process.env.NODE_ENV === 'production' && process.env.COOKIE_SAME_SITE === 'None' && !process.env.CLIENT_ORIGIN?.split(',').every((origin) => origin.trim().startsWith('https://'))) throw new Error('Cross-site cookies require HTTPS CLIENT_ORIGIN entries.');
 const app = express();
 app.disable('x-powered-by');
-if (process.env.TRUST_PROXY) app.set('trust proxy', process.env.TRUST_PROXY);
+if (process.env.TRUST_PROXY) app.set('trust proxy', /^\d+$/.test(process.env.TRUST_PROXY) ? Number(process.env.TRUST_PROXY) : process.env.TRUST_PROXY.split(',').map((value) => value.trim()));
 const port = Number(process.env.PORT || 4000);
-const mediaRoot = path.resolve(process.env.MEDIA_DIR || './media');
-await fs.mkdir(mediaRoot, { recursive: true });
-
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 const allowedOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:4200').split(',').map((origin) => origin.trim()).filter(Boolean);
 if (process.env.NODE_ENV === 'production' && allowedOrigins.some((origin) => !origin.startsWith('https://'))) throw new Error('Production CLIENT_ORIGIN entries must use HTTPS.');
 app.use(cors({ origin(origin, cb) { if (!origin || allowedOrigins.includes(origin)) return cb(null, origin || false); cb(new Error('Origin is not allowed by CORS')); }, credentials: true, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'X-CSRF-Token'], maxAge: 600 }));
 app.use(express.json({ limit: '2mb', strict: true }));
+app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'private, no-store'); next(); });
 app.use('/api', rateLimit({ windowMs: 60_000, limit: 180, message: 'Too many requests. Please pause briefly and try again.' }));
 app.use('/api', csrfProtection);
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
@@ -48,4 +44,4 @@ app.use((err, _req, res, _next) => {
 });
 
 await mongoose.connect(process.env.MONGODB_URI);
-app.listen(port, () => console.log(`Smart Wall Visualizer API listening at http://localhost:${port}`));
+app.listen(port, '0.0.0.0', () => console.log(`Smart Wall Visualizer API listening on port ${port}`));

@@ -13,7 +13,7 @@ type PaintLayer = { id: string; name: string; colorId: string | null; colorHex: 
 type EditorSnapshot = { mask: WallMask; polygonDraft: Point[]; color: PaintColor | null; opacity: number; appearance: Appearance; pendingAiMask: AiMask | null; layers: PaintLayer[]; activeLayerId: string };
 type Trial = { _id: string; name: string; colorId: string | null; colorHex: string; opacity: number; mask: WallMask; appearance?: Appearance; layers?: PaintLayer[]; activeLayerId?: string; createdAt: string; satisfaction?: number | null };
 type Appearance = { lighting: number; calibration: number; finish: 'matte' | 'eggshell' | 'satin' | 'gloss'; pattern: 'solid' | 'stripes' | 'checks'; dualTone: boolean; split: number; secondColor: string; secondColorId?: string };
-type Project = { _id: string; title: string; originalUrl: string; mimeType: string; trials: Trial[]; updatedAt: string; owner?: { name: string; email: string } };
+type Project = { _id: string; title: string; mimeType: string; trials: Trial[]; updatedAt: string; owner?: { name: string; email: string } };
 type Metrics = { totalUsers: number; uploadsLast24h: number; savedTrials: number; averageSessionMinutes: number; activeSessions: number; averageSatisfaction: number | null; refreshedAt: string };
 
 @Component({
