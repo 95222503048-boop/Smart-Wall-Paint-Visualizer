@@ -5,11 +5,11 @@
   "rewrites": [
     {
       "source": "/api",
-      "destination": "https://smart-wall-paint-visualizer-api.onrender.com/api"
+      "destination": "https://still-room-ar37.onrender.com/api"
     },
     {
       "source": "/api/:path*",
-      "destination": "https://smart-wall-paint-visualizer-api.onrender.com/api/:path*"
+      "destination": "https://still-room-ar37.onrender.com/api/:path*"
     },
     {
       "source": "/(.*)",
