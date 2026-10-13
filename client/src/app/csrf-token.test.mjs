@@ -4,6 +4,30 @@ import { CsrfTokenManager } from './csrf-token.mjs';
 
 const responseFor = (token) => ({ ok: true, status: 200, async json() { return { csrfToken: token }; } });
 
+test('the default fetch implementation is invoked with the global context', async () => {
+  const previousFetch = globalThis.fetch;
+  let receivedThis;
+  let receivedUrl;
+  let receivedOptions;
+  globalThis.fetch = function (url, options) {
+    receivedThis = this;
+    receivedUrl = url;
+    receivedOptions = options;
+    return Promise.resolve(responseFor('token-default'));
+  };
+
+  try {
+    const manager = new CsrfTokenManager();
+    assert.equal(await manager.ensureToken(), 'token-default');
+    assert.equal(receivedThis, globalThis);
+    assert.equal(receivedUrl, '/api/auth/csrf');
+    assert.equal(receivedOptions.credentials, 'same-origin');
+    assert.equal(receivedOptions.cache, 'no-store');
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test('concurrent token bootstrap attempts share one request and one token', async () => {
   let calls = 0;
   let release;

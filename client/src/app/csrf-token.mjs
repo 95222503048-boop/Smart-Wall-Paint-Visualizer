@@ -1,6 +1,6 @@
 /** Keeps the readable CSRF cookie and the header token in sync across requests. */
 export class CsrfTokenManager {
-  constructor(fetchImpl = globalThis.fetch, apiBase = '/api') {
+  constructor(fetchImpl = globalThis.fetch.bind(globalThis), apiBase = '/api') {
     this.fetchImpl = fetchImpl;
     this.apiBase = apiBase;
     this.token = '';
