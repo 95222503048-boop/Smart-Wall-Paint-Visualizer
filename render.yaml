@@ -18,7 +18,7 @@ services:
       - key: CLIENT_ORIGIN
         sync: false
       - key: COOKIE_SAME_SITE
-        value: None
+        value: Strict
       - key: TRUST_PROXY
         value: "1"
       - key: MAX_UPLOAD_MB

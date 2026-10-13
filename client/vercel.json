@@ -4,8 +4,30 @@
   "outputDirectory": "dist/smart-wall-visualizer/browser",
   "rewrites": [
     {
+      "source": "/api",
+      "destination": "https://still-room-ar37.onrender.com/api"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "https://still-room-ar37.onrender.com/api/:path*"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/api",
+      "headers": [
+        { "key": "x-vercel-enable-rewrite-caching", "value": "0" }
+      ]
+    },
+    {
+      "source": "/api/:path*",
+      "headers": [
+        { "key": "x-vercel-enable-rewrite-caching", "value": "0" }
+      ]
     }
   ]
 }
