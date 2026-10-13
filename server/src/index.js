@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { randomUUID } from 'node:crypto';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -9,6 +10,7 @@ import colorRoutes from './routes/colors.js';
 import adminRoutes from './routes/admin.js';
 import { csrfProtection } from './middleware.js';
 import { rateLimit } from './rate-limit.js';
+import { safeDiagnosticMessage } from './diagnostics.js';
 
 const required = ['MONGODB_URI', 'JWT_SECRET', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'];
 for (const key of required) if (!process.env[key]) throw new Error(`${key} is required. Set it in server/.env.`);
@@ -17,6 +19,7 @@ if (process.env.COOKIE_SAME_SITE && !['Strict', 'Lax', 'None'].includes(process.
 if (process.env.NODE_ENV === 'production' && process.env.COOKIE_SAME_SITE === 'None' && !process.env.CLIENT_ORIGIN?.split(',').every((origin) => origin.trim().startsWith('https://'))) throw new Error('Cross-site cookies require HTTPS CLIENT_ORIGIN entries.');
 const app = express();
 app.disable('x-powered-by');
+app.use((req, res, next) => { req.requestId = randomUUID(); res.setHeader('X-Request-Id', req.requestId); next(); });
 if (process.env.TRUST_PROXY) app.set('trust proxy', /^\d+$/.test(process.env.TRUST_PROXY) ? Number(process.env.TRUST_PROXY) : process.env.TRUST_PROXY.split(',').map((value) => value.trim()));
 const port = Number(process.env.PORT || 4000);
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
@@ -32,15 +35,15 @@ app.use('/api/auth', authRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/colors', colorRoutes);
 app.use('/api/admin', adminRoutes);
-app.use((err, _req, res, _next) => {
-  console.error(`${err.name || 'Error'}: ${err.message || 'Request failed'}`);
+app.use((err, req, res, _next) => {
+  console.error(JSON.stringify({ event: 'request_error', requestId: req.requestId || null, method: req.method, path: req.originalUrl.split('?')[0], errorType: err.name || 'Error', message: safeDiagnosticMessage(err.message || 'Request failed') }));
   if (err instanceof mongoose.Error.ValidationError) return res.status(400).json({ message: Object.values(err.errors).map((e) => e.message).join(' ') });
   if (err instanceof mongoose.Error.CastError) return res.status(400).json({ message: 'The requested record identifier is invalid.' });
   if (err.code === 11000) return res.status(409).json({ message: 'That record already exists.' });
   if (err.message === 'Origin is not allowed by CORS') return res.status(403).json({ message: 'This website origin is not allowed.' });
   if (err instanceof SyntaxError && 'body' in err) return res.status(400).json({ message: 'Request body must be valid JSON.' });
   if (err.name === 'MulterError') return res.status(400).json({ message: err.code === 'LIMIT_FILE_SIZE' ? `Image exceeds the ${process.env.MAX_UPLOAD_MB || 20} MB limit.` : 'Unable to accept that image.' });
-  res.status(500).json({ message: 'Something went wrong. Please try again.' });
+  res.status(500).json({ message: 'Something went wrong. Please try again.', requestId: req.requestId || null });
 });
 
 await mongoose.connect(process.env.MONGODB_URI);

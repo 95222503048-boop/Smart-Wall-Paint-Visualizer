@@ -8,6 +8,7 @@ import Color from '../models/Color.js';
 import { authenticate } from '../middleware.js';
 import { rateLimit } from '../rate-limit.js';
 import cloudinary from '../cloudinary.js';
+import { safeDiagnosticMessage } from '../diagnostics.js';
 
 const limit = Number(process.env.MAX_UPLOAD_MB || 20) * 1024 * 1024;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: limit, files: 1 } });
@@ -121,11 +122,11 @@ router.post('/upload', authenticateUser, uploadRateLimit, upload.single('photo')
     try {
       uploadedAsset = await uploadToCloudinary(cloudinaryClient, req.file.buffer, `room-${randomUUID()}`);
     } catch (err) {
-      logger.error(`Cloudinary upload failed: ${err.message || 'unknown Cloudinary error'}`);
+      logger.error(JSON.stringify({ event: 'cloudinary_upload_failed', requestId: req.requestId || null, message: safeDiagnosticMessage(err.message || 'Cloudinary upload failed') }));
       return res.status(502).json({ message: 'The image could not be uploaded to image storage. Please try again.' });
     }
     if (!hasCloudinaryPublicId(uploadedAsset?.public_id)) {
-      logger.error(`Cloudinary upload returned no valid public_id; no project record was created. asset_id=${uploadedAsset?.asset_id || 'unavailable'}`);
+      logger.error(JSON.stringify({ event: 'cloudinary_upload_missing_public_id', requestId: req.requestId || null, assetId: safeDiagnosticMessage(uploadedAsset?.asset_id || 'unavailable') }));
       return res.status(502).json({ message: 'Image storage did not return a valid image identifier, so the room was not saved. Please try again.' });
     }
     cloudinaryPublicId = uploadedAsset.public_id;

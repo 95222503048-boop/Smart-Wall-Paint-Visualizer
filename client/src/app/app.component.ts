@@ -1,8 +1,10 @@
 import { CommonModule } from '@angular/common';
-import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { Component, ElementRef, HostListener, ViewChild, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Component, ElementRef, HostListener, ViewChild, inject, isDevMode } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
+import { describeApiError, isMissingOriginalImage } from './api-error.mjs';
+import { uploadThenOpenProject } from './project-upload-flow.mjs';
 
 type User = { id: string; name: string; email: string; role: 'user' | 'admin' };
 type PaintColor = { _id: string; name: string; hex: string; brand: string; finishes: string[]; categories: string[]; active?: boolean };
@@ -35,6 +37,7 @@ export class AppComponent {
   email = ''; password = ''; fullName = '';
   projects: Project[] = []; colors: PaintColor[] = [];
   imageCache: Record<string, string> = {};
+  imageStates: Record<string, 'missing' | 'failed'> = {};
   adminUsers: Array<User & { projectCount: number; createdAt: string }> = [];
   adminProjects: Project[] = [];
   metrics: Metrics | null = null;
@@ -107,12 +110,27 @@ export class AppComponent {
   projectImage(project: Project): string { return this.imageCache[project._id] || ''; }
   private async cacheProjectImage(project: Project) {
     if (this.imageCache[project._id]) return this.imageCache[project._id];
-    const blob = await firstValueFrom(this.http.get(`${this.api}/projects/${project._id}/image`, { ...this.headers(), responseType: 'blob' }));
-    const url = URL.createObjectURL(blob);
-    this.imageCache[project._id] = url;
-    return url;
+    delete this.imageStates[project._id];
+    try {
+      const blob = await firstValueFrom(this.http.get(`${this.api}/projects/${project._id}/image`, { ...this.headers(), responseType: 'blob' }));
+      const url = URL.createObjectURL(blob);
+      this.imageCache[project._id] = url;
+      return url;
+    } catch (err) {
+      this.imageStates[project._id] = isMissingOriginalImage(err) ? 'missing' : 'failed';
+      throw err;
+    }
   }
-  private showError(err: unknown) { this.error = err instanceof HttpErrorResponse ? (err.error?.message || 'Something went wrong. Please try again.') : 'Something went wrong. Please try again.'; }
+  imageUnavailableMessage(project: Project) {
+    return this.imageStates[project._id] === 'missing'
+      ? 'Original photo unavailable. Project and saved designs are kept.'
+      : 'Photo preview unavailable. Select to retry.';
+  }
+  private async showError(err: unknown, operation = 'API request', prefix = '') {
+    const detail = await describeApiError(err);
+    this.error = prefix ? `${prefix} ${detail.message}` : detail.message;
+    if (isDevMode()) console.warn('[Stillroom diagnostic]', { operation, status: detail.status, requestPath: detail.requestPath, requestId: detail.requestId || undefined, message: detail.message });
+  }
 
   async restoreSession() {
     try {
@@ -128,11 +146,11 @@ export class AppComponent {
       const result = await firstValueFrom(this.http.post<{ user: User; sessionId: string }>(`${this.api}${path}`, payload, this.headers()));
       this.user = result.user; this.sessionId = result.sessionId;
       this.view = 'home'; await this.loadHome(); void this.pingSession();
-    } catch (err) { this.showError(err); } finally { this.busy = false; }
+    } catch (err) { await this.showError(err); } finally { this.busy = false; }
   }
   private clearSession() {
     this.user = null; this.sessionId = ''; this.view = 'auth';
-    Object.values(this.imageCache).forEach((url) => URL.revokeObjectURL(url)); this.imageCache = {};
+    Object.values(this.imageCache).forEach((url) => URL.revokeObjectURL(url)); this.imageCache = {}; this.imageStates = {};
     if (this.adminTimer) window.clearInterval(this.adminTimer);
   }
   logout() { this.confirmEditorLeave(() => void this.performLogout()); }
@@ -151,7 +169,7 @@ export class AppComponent {
       const [projects, colors] = await Promise.all([this.request<Project[]>('GET', '/projects'), this.request<PaintColor[]>('GET', '/colors')]);
       this.projects = projects; this.colors = colors;
       await Promise.all(projects.map((project) => this.cacheProjectImage(project).catch(() => '')));
-    } catch (err) { this.showError(err); }
+    } catch (err) { await this.showError(err); }
   }
   openUpload() { this.error = ''; this.message = ''; this.uploadTitle = ''; this.ownershipConfirmed = false; this.photoInput?.nativeElement.click(); }
   async onPhotoPicked(event: Event) {
@@ -175,28 +193,65 @@ export class AppComponent {
   async createProject() {
     if (!this.uploadPendingFile) return;
     if (!this.ownershipConfirmed) { this.error = 'Please confirm that you own this photo.'; return; }
+    if (this.busy) return;
     this.error = ''; this.busy = true;
     try {
-      const form = new FormData(); form.set('photo', this.uploadPendingFile); form.set('title', this.uploadTitle || 'My room'); form.set('ownershipConfirmed', 'true'); form.set('width', String(this.photo.naturalWidth)); form.set('height', String(this.photo.naturalHeight));
-      const project = await firstValueFrom(this.http.post<Project>(`${this.api}/projects/upload`, form, this.headers()));
-      this.uploadDialog = false; this.uploadPendingFile = null; this.projects.unshift(project); await this.openProject(project);
-      if (this.uploadPreviewUrl) URL.revokeObjectURL(this.uploadPreviewUrl); this.uploadPreviewUrl = '';
-    } catch (err) { this.showError(err); } finally { this.busy = false; }
+      const outcome = await uploadThenOpenProject(
+        async () => {
+          const form = new FormData(); form.set('photo', this.uploadPendingFile!); form.set('title', this.uploadTitle || 'My room'); form.set('ownershipConfirmed', 'true'); form.set('width', String(this.photo.naturalWidth)); form.set('height', String(this.photo.naturalHeight));
+          return await firstValueFrom(this.http.post<Project>(`${this.api}/projects/upload`, form, this.headers()));
+        },
+        (project) => {
+          this.projects = [project, ...this.projects.filter((saved) => saved._id !== project._id)];
+          this.error = '';
+          this.cancelUpload();
+        },
+        async (project) => await this.openProject(project, undefined, true)
+      );
+      if (outcome.openError) {
+        await this.showError(outcome.openError, 'Open uploaded room', 'Your room was uploaded and saved, but its photo could not be opened. You can retry from My spaces.');
+      } else if (!outcome.opened && !this.error) {
+        this.error = 'Your room was uploaded and saved, but its photo could not be opened. You can retry from My spaces.';
+      }
+    } catch (err) {
+      await this.showError(err, 'Upload room');
+    } finally { this.busy = false; }
   }
-  async openProject(project: Project, trial?: Trial) {
+  async openProject(project: Project, trial?: Trial, uploadSucceeded = false): Promise<boolean> {
     this.error = ''; this.message = ''; this.busy = true;
     try {
-      this.activeProject = await this.request<Project>('GET', `/projects/${project._id}`);
-      const selected = trial || this.activeProject.trials[this.activeProject.trials.length - 1];
+      const loadedProject = await this.request<Project>('GET', `/projects/${project._id}`);
+      const selected = trial || loadedProject.trials[loadedProject.trials.length - 1];
+      const src = await this.cacheProjectImage(loadedProject);
+      const img = new Image();
+      img.src = src;
+      try { await img.decode(); }
+      catch (err) {
+        URL.revokeObjectURL(src);
+        delete this.imageCache[loadedProject._id];
+        this.imageStates[loadedProject._id] = 'failed';
+        throw err;
+      }
+
+      this.activeProject = loadedProject;
       this.activeTrialId = selected?._id || crypto.randomUUID();
       this.paintLayers = selected?.layers?.length ? structuredClone(selected.layers) : [{ id: crypto.randomUUID(), name: 'Wall 1', colorId: selected?.colorId || null, colorHex: selected?.colorHex || this.colors[0]?.hex || '#C7836A', opacity: selected?.opacity ?? 0.72, mask: structuredClone(selected?.mask || { brush: [], polygons: [] }), appearance: { ...this.appearance, ...(selected?.appearance || {}) } }];
       this.activeLayerId = selected?.activeLayerId && this.paintLayers.some((layer) => layer.id === selected.activeLayerId) ? selected.activeLayerId : this.paintLayers[0].id;
       this.loadActiveLayer();
+      this.photo = img; this.photoReady = true; this.imageScale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
       this.previewMode = 'paint'; this.polygonDraft = []; this.undoStack = []; this.pendingAiMask = null; this.dirty = false; this.zoom = 1; this.tool = 'brush';
-      this.photoReady = false;
-      const src = await this.cacheProjectImage(this.activeProject);
-      const img = new Image(); img.onload = () => { this.photo = img; this.photoReady = true; this.imageScale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight)); this.view = 'editor'; requestAnimationFrame(() => this.drawCanvas()); }; img.onerror = () => { this.error = 'The original photo could not be loaded.'; }; img.src = src;
-    } catch (err) { this.showError(err); } finally { this.busy = false; }
+      this.view = 'editor'; requestAnimationFrame(() => this.drawCanvas());
+      return true;
+    } catch (err) {
+      if (isMissingOriginalImage(err)) {
+        this.error = uploadSucceeded
+          ? 'Your room was uploaded and saved, but its original photo is unavailable. The room and saved designs remain in My spaces.'
+          : 'This room’s original photo is unavailable. The project and saved designs remain in My spaces.';
+      } else {
+        await this.showError(err, 'Open room', uploadSucceeded ? 'Your room was uploaded and saved, but its photo could not be opened. You can retry from My spaces.' : '');
+      }
+      return false;
+    } finally { this.busy = false; }
   }
   newTrial() { this.confirmEditorLeave(() => this.startNewTrial()); }
   private startNewTrial() {
@@ -220,21 +275,21 @@ export class AppComponent {
       const trialName = `${trialColours.length ? trialColours.join(' + ') : this.color.name}${usedLayers.length > 1 ? ` · ${usedLayers.length} areas` : ' trial'}`;
       const saved = await this.request<Project>('PUT', `/projects/${this.activeProject._id}/trials/${this.activeTrialId}`, { name: trialName, colorId: this.color._id || null, colorHex: this.color.hex, opacity: this.opacity, mask: this.mask, appearance: this.appearance, layers: this.paintLayers, activeLayerId: this.activeLayerId });
       this.activeProject = saved; this.projects = this.projects.map((p) => p._id === saved._id ? saved : p); this.dirty = false; this.message = 'Your changes are saved.'; return true;
-    } catch (err) { this.showError(err); return false; } finally { this.busy = false; }
+    } catch (err) { await this.showError(err); return false; } finally { this.busy = false; }
   }
   async removeProject(project: Project) {
     if (!window.confirm(`Delete “${project.title}” and its saved paint trials?`)) return;
-    try { await this.request('DELETE', `/projects/${project._id}`); this.projects = this.projects.filter((p) => p._id !== project._id); const url = this.imageCache[project._id]; if (url) URL.revokeObjectURL(url); delete this.imageCache[project._id]; if (this.activeProject?._id === project._id) this.goHome(); }
-    catch (err) { this.showError(err); }
+    try { await this.request('DELETE', `/projects/${project._id}`); this.projects = this.projects.filter((p) => p._id !== project._id); const url = this.imageCache[project._id]; if (url) URL.revokeObjectURL(url); delete this.imageCache[project._id]; delete this.imageStates[project._id]; if (this.activeProject?._id === project._id) this.goHome(); }
+    catch (err) { await this.showError(err); }
   }
   async downloadRoomPhoto(project: Project) {
     try { const url = await this.cacheProjectImage(project); const link = document.createElement('a'); link.href = url; link.download = `${project.title || 'room'}${project.mimeType === 'image/png' ? '.png' : '.jpg'}`; link.click(); }
-    catch (err) { this.showError(err); }
+    catch (err) { await this.showError(err); }
   }
   async deleteSavedTrial(project: Project, trial: Trial) {
     if (!window.confirm(`Delete “${trial.name || 'Paint trial'}” from ${project.title}? This only removes the saved design.`)) return;
     try { await this.request('DELETE', `/projects/${project._id}/trials/${trial._id}`); const updated = { ...project, trials: project.trials.filter((item) => item._id !== trial._id) }; this.projects = this.projects.map((item) => item._id === project._id ? updated : item); if (this.activeProject?._id === project._id) this.activeProject = updated; }
-    catch (err) { this.showError(err); }
+    catch (err) { await this.showError(err); }
   }
   async downloadSavedTrial(project: Project, trial: Trial) {
     try {
@@ -249,12 +304,12 @@ export class AppComponent {
         const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error('PNG export failed.')), 'image/png'));
         const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `${project.title}-${trial.name || 'paint-trial'}.png`.replace(/[^a-z0-9_.-]+/gi, '-'); link.click(); URL.revokeObjectURL(url);
       } finally { Object.assign(this, old); this.drawCanvas(); }
-    } catch (err) { this.showError(err); }
+    } catch (err) { await this.showError(err); }
   }
   async submitFeedback(rating: number) {
     if (!this.activeProject || !this.currentTrial) return;
     try { await this.request('POST', `/projects/${this.activeProject._id}/trials/${this.activeTrialId}/feedback`, { rating }); this.currentTrial.satisfaction = rating; this.message = 'Thanks for your feedback.'; }
-    catch (err) { this.showError(err); }
+    catch (err) { await this.showError(err); }
   }
   private confirmEditorLeave(action: () => void) {
     if (!this.isEditor || (!this.dirty && !this.pendingAiMask)) { action(); return; }
@@ -277,7 +332,7 @@ export class AppComponent {
   goAdmin() { this.confirmEditorLeave(() => void this.openAdmin()); }
   private async openAdmin() {
     this.view = 'admin'; this.error = ''; this.busy = true;
-    try { await this.loadAdmin(); if (this.adminTimer) window.clearInterval(this.adminTimer); this.adminTimer = window.setInterval(() => { if (this.view === 'admin') void this.refreshAdmin(); }, 60000); } catch (err) { this.showError(err); } finally { this.busy = false; }
+    try { await this.loadAdmin(); if (this.adminTimer) window.clearInterval(this.adminTimer); this.adminTimer = window.setInterval(() => { if (this.view === 'admin') void this.refreshAdmin(); }, 60000); } catch (err) { await this.showError(err); } finally { this.busy = false; }
   }
   private async loadAdmin() {
     const [metrics, users, projects, colors] = await Promise.all([
@@ -286,10 +341,10 @@ export class AppComponent {
     this.metrics = metrics; this.adminUsers = users; this.adminProjects = projects; this.colors = colors;
     await Promise.all(projects.map((project) => this.cacheProjectImage(project).catch(() => '')));
   }
-  async refreshAdmin() { try { await this.loadAdmin(); } catch (err) { this.showError(err); } }
+  async refreshAdmin() { try { await this.loadAdmin(); } catch (err) { await this.showError(err); } }
   async changeRole(person: User & { projectCount: number }, event: Event) {
     const role = (event.target as HTMLSelectElement).value;
-    try { await this.request('PATCH', `/admin/users/${person.id}/role`, { role }); person.role = role as 'user' | 'admin'; } catch (err) { this.showError(err); }
+    try { await this.request('PATCH', `/admin/users/${person.id}/role`, { role }); person.role = role as 'user' | 'admin'; } catch (err) { await this.showError(err); }
   }
   async addColor() {
     this.error = '';
@@ -301,13 +356,13 @@ export class AppComponent {
       const exists = this.colors.some((c) => c._id === saved._id);
       this.colors = (exists ? this.colors.map((c) => c._id === saved._id ? saved : c) : [...this.colors, saved]).sort((a, b) => a.name.localeCompare(b.name));
       this.cancelColorEdit();
-    } catch (err) { this.showError(err); }
+    } catch (err) { await this.showError(err); }
   }
   editColor(color: PaintColor) { this.editingColorId = color._id; this.newColor = { name: color.name, hex: color.hex, brand: color.brand, finishes: color.finishes.join(', '), categories: color.categories.join(', ') }; }
   cancelColorEdit() { this.editingColorId = ''; this.newColor = { name: '', hex: '#879B87', brand: 'Studio palette', finishes: 'Matte, Eggshell, Satin', categories: 'Living room, Bedroom' }; }
   async removeColor(color: PaintColor) {
     if (!window.confirm(`Permanently delete “${color.name}” from the studio palette? This cannot be undone. Existing saved previews will keep their recorded colour.`)) return;
-    try { await this.request('DELETE', `/colors/${color._id}`); this.colors = this.colors.filter((c) => c._id !== color._id); } catch (err) { this.showError(err); }
+    try { await this.request('DELETE', `/colors/${color._id}`); this.colors = this.colors.filter((c) => c._id !== color._id); } catch (err) { await this.showError(err); }
   }
 
   setTool(tool: 'brush' | 'eraser' | 'polygon' | 'ai' | 'zoom-in' | 'zoom-out') {
@@ -730,5 +785,5 @@ export class AppComponent {
   humanDate(date: string) { return new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(date)); }
   async refreshProjects() { await this.loadHome(); }
   dismissNotice(event: Event) { (event.currentTarget as HTMLElement).parentElement?.remove(); }
-  cancelUpload() { this.uploadDialog = false; this.uploadPendingFile = null; if (this.uploadPreviewUrl) URL.revokeObjectURL(this.uploadPreviewUrl); this.uploadPreviewUrl = ''; }
+  cancelUpload() { this.uploadDialog = false; this.uploadPendingFile = null; this.ownershipConfirmed = false; this.uploadTitle = ''; if (this.uploadPreviewUrl) URL.revokeObjectURL(this.uploadPreviewUrl); this.uploadPreviewUrl = ''; }
 }

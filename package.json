@@ -9,6 +9,7 @@
     "build": "npm run build --prefix client",
     "test:server": "npm test --prefix server",
     "test:csrf-client": "node --test client/src/app/csrf-token.test.mjs",
+    "test:client-errors": "node --test client/src/app/api-error.test.mjs client/src/app/project-upload-flow.test.mjs",
     "seed:admin": "npm run seed:admin --prefix server"
   }
 }
