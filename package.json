@@ -8,6 +8,7 @@
     "dev:client": "npm start --prefix client",
     "build": "npm run build --prefix client",
     "test:server": "npm test --prefix server",
+    "test:csrf-client": "node --test client/src/app/csrf-token.test.mjs",
     "seed:admin": "npm run seed:admin --prefix server"
   }
 }

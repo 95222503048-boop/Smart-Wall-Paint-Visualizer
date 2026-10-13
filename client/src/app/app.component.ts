@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { HttpClient, HttpErrorResponse, HttpHeaders } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Component, ElementRef, HostListener, ViewChild, inject } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
@@ -30,7 +30,6 @@ export class AppComponent {
 
   user: User | null = null;
   sessionId = '';
-  csrfToken = '';
   view: 'auth' | 'home' | 'editor' | 'saved' | 'admin' = 'auth';
   authMode: 'login' | 'register' = 'login';
   email = ''; password = ''; fullName = '';
@@ -101,11 +100,7 @@ export class AppComponent {
   get aiModelReady(): boolean { return !!this.segmentationRuntime; }
   get imageDimensions(): string { return this.photoReady ? `${Math.round(this.photo.naturalWidth * this.imageScale)} × ${Math.round(this.photo.naturalHeight * this.imageScale)} px` : ''; }
 
-  private headers() { return { withCredentials: true, headers: new HttpHeaders(this.csrfToken ? { 'X-CSRF-Token': this.csrfToken } : {}) }; }
-  private async refreshCsrf() {
-    const result = await firstValueFrom(this.http.get<{ csrfToken: string }>(`${this.api}/auth/csrf`, { withCredentials: true }));
-    this.csrfToken = result.csrfToken;
-  }
+  private headers() { return { withCredentials: true }; }
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     return await firstValueFrom(this.http.request<T>(method, `${this.api}${path}`, { body, ...this.headers(), responseType: 'json' }));
   }
@@ -121,7 +116,6 @@ export class AppComponent {
 
   async restoreSession() {
     try {
-      await this.refreshCsrf();
       const data = await this.request<{ user: User }>('GET', '/auth/me');
       this.user = data.user; this.view = 'home'; await this.loadHome(); void this.pingSession();
     } catch { this.clearSession(); }
@@ -129,7 +123,6 @@ export class AppComponent {
   async authenticate() {
     this.error = ''; this.busy = true;
     try {
-      await this.refreshCsrf();
       const path = this.authMode === 'login' ? '/auth/login' : '/auth/register';
       const payload = this.authMode === 'login' ? { email: this.email, password: this.password } : { name: this.fullName, email: this.email, password: this.password };
       const result = await firstValueFrom(this.http.post<{ user: User; sessionId: string }>(`${this.api}${path}`, payload, this.headers()));
