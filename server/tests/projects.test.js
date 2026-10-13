@@ -123,7 +123,10 @@ test('upload persists the actual Cloudinary public_id and project metadata', asy
 });
 
 test('Cloudinary upload failure does not create a project', async (t) => {
-  const error = Object.assign(new Error('Cloudinary authentication failed: api_secret=do-not-log'), { name: 'CloudinaryError', http_code: 401, code: 'AUTH_FAILED' });
+  const error = Object.assign(new Error('Server returned unexpected status code - 403'), {
+    name: 'UnexpectedResponse', http_code: 403, provider_message: 'upload restricted by account policy',
+    provider_code: 'UPLOAD_RESTRICTED', x_cld_error: 'Upload operation is restricted'
+  });
   const { baseUrl, calls } = await withServer(t, { uploadError: error });
   const response = await uploadRoom(baseUrl);
   const payload = await response.json();
@@ -135,11 +138,11 @@ test('Cloudinary upload failure does not create a project', async (t) => {
   const diagnostic = JSON.parse(calls.logs[0].message);
   assert.equal(diagnostic.requestId, payload.requestId);
   assert.equal(diagnostic.stage, 'cloudinary_upload');
-  assert.equal(diagnostic.errorName, 'CloudinaryError');
-  assert.equal(diagnostic.httpStatus, 401);
-  assert.equal(diagnostic.cloudinaryCode, 'AUTH_FAILED');
-  assert.match(diagnostic.message, /authentication failed/);
-  assert.doesNotMatch(diagnostic.message, /do-not-log/);
+  assert.equal(diagnostic.errorName, 'UnexpectedResponse');
+  assert.equal(diagnostic.httpStatus, 403);
+  assert.equal(diagnostic.cloudinaryCode, 'UPLOAD_RESTRICTED');
+  assert.equal(diagnostic.providerMessage, 'upload restricted by account policy');
+  assert.equal(diagnostic.xCldError, 'Upload operation is restricted');
 });
 
 test('successful upload response without public_id is rejected and never persisted', async (t) => {

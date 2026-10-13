@@ -13,11 +13,15 @@ export function safeDiagnosticMessage(value) {
 
 export function structuredErrorDetails(error) {
   const status = Number(error?.http_code ?? error?.statusCode ?? error?.status);
-  const code = error?.code ?? error?.error?.code;
+  const code = error?.provider_code ?? error?.providerCode ?? error?.code ?? error?.error?.code;
+  const providerMessage = error?.provider_message ?? error?.providerMessage ?? error?.response?.data?.error?.message;
+  const xCldError = error?.x_cld_error ?? error?.xCldError ?? error?.headers?.['x-cld-error'] ?? error?.response?.headers?.['x-cld-error'];
   return {
     errorName: safeDiagnosticMessage(error?.name || 'Error'),
     message: safeDiagnosticMessage(error?.message || 'Operation failed'),
     ...(Number.isFinite(status) ? { httpStatus: status } : {}),
-    ...(code !== undefined ? { cloudinaryCode: safeDiagnosticMessage(code) } : {})
+    ...(code !== undefined ? { cloudinaryCode: safeDiagnosticMessage(code) } : {}),
+    ...(providerMessage ? { providerMessage: safeDiagnosticMessage(providerMessage) } : {}),
+    ...(xCldError ? { xCldError: safeDiagnosticMessage(xCldError) } : {})
   };
 }
