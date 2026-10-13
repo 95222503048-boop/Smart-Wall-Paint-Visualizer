@@ -8,7 +8,7 @@ import Color from '../models/Color.js';
 import { authenticate } from '../middleware.js';
 import { rateLimit } from '../rate-limit.js';
 import cloudinary from '../cloudinary.js';
-import { safeDiagnosticMessage } from '../diagnostics.js';
+import { safeDiagnosticMessage, structuredErrorDetails } from '../diagnostics.js';
 
 const limit = Number(process.env.MAX_UPLOAD_MB || 20) * 1024 * 1024;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: limit, files: 1 } });
@@ -115,22 +115,38 @@ router.get('/:id/image', authenticateUser, async (req, res, next) => {
 
 router.post('/upload', authenticateUser, uploadRateLimit, upload.single('photo'), async (req, res, next) => {
   let cloudinaryPublicId;
+  let stage = 'request_validation';
+  const logUploadFailure = (error, currentStage = stage) => {
+    logger.error(JSON.stringify({
+      event: 'project_upload_failed',
+      requestId: req.requestId || null,
+      stage: currentStage,
+      ...structuredErrorDetails(error)
+    }));
+  };
   try {
     if (req.body?.ownershipConfirmed !== 'true') return res.status(400).json({ message: 'Confirm that you own this room photo before uploading.' });
     if (!req.file || !validImage(req.file.buffer, req.file.mimetype)) return res.status(400).json({ message: 'Upload a valid JPG or PNG image.' });
     let uploadedAsset;
+    const requestedPublicId = `smart-wall-visualizer/room-${randomUUID()}`;
+    stage = 'cloudinary_upload';
     try {
-      uploadedAsset = await uploadToCloudinary(cloudinaryClient, req.file.buffer, `room-${randomUUID()}`);
+      uploadedAsset = await uploadToCloudinary(cloudinaryClient, req.file.buffer, requestedPublicId.slice('smart-wall-visualizer/'.length));
     } catch (err) {
-      logger.error(JSON.stringify({ event: 'cloudinary_upload_failed', requestId: req.requestId || null, message: safeDiagnosticMessage(err.message || 'Cloudinary upload failed') }));
-      return res.status(502).json({ message: 'The image could not be uploaded to image storage. Please try again.' });
+      logUploadFailure(err);
+      return res.status(502).json({ message: 'The image could not be uploaded to image storage. Please try again.', requestId: req.requestId || null });
     }
     if (!hasCloudinaryPublicId(uploadedAsset?.public_id)) {
-      logger.error(JSON.stringify({ event: 'cloudinary_upload_missing_public_id', requestId: req.requestId || null, assetId: safeDiagnosticMessage(uploadedAsset?.asset_id || 'unavailable') }));
-      return res.status(502).json({ message: 'Image storage did not return a valid image identifier, so the room was not saved. Please try again.' });
+      const error = new Error('Cloudinary upload response did not include a non-empty public_id.');
+      error.name = 'InvalidCloudinaryUploadResponse';
+      logUploadFailure(error, 'cloudinary_response_validation');
+      try { await removeCloudinaryAsset(cloudinaryClient, requestedPublicId); }
+      catch (cleanupError) { logUploadFailure(cleanupError, 'cloudinary_cleanup_after_invalid_response'); }
+      return res.status(502).json({ message: 'The image could not be uploaded to image storage. Please try again.', requestId: req.requestId || null });
     }
     cloudinaryPublicId = uploadedAsset.public_id;
     let project;
+    stage = 'mongodb_project_creation';
     try {
       project = await ProjectModel.create({
         owner: req.user._id,
@@ -143,11 +159,12 @@ router.post('/upload', authenticateUser, uploadRateLimit, upload.single('photo')
       });
     } catch (err) {
       try { await removeCloudinaryAsset(cloudinaryClient, cloudinaryPublicId); }
-      catch (cleanupError) { logger.error(`Could not roll back Cloudinary asset ${cloudinaryPublicId} after project creation failed: ${cleanupError.message || 'unknown error'}`); }
+      catch (cleanupError) { logUploadFailure(cleanupError, 'cloudinary_cleanup_after_mongodb_failure'); }
       throw err;
     }
     res.status(201).json(project);
   } catch (err) {
+    logUploadFailure(err);
     next(err);
   }
 });

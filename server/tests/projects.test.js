@@ -70,6 +70,7 @@ function makeHarness(options = {}) {
     error: (message) => calls.logs.push({ level: 'error', message })
   };
   const app = express();
+  app.use((req, _res, next) => { req.requestId = 'upload-reference-test'; next(); });
   app.use(express.json());
   app.use('/api/projects', createProjectsRouter({
     ProjectModel,
@@ -122,11 +123,23 @@ test('upload persists the actual Cloudinary public_id and project metadata', asy
 });
 
 test('Cloudinary upload failure does not create a project', async (t) => {
-  const { baseUrl, calls } = await withServer(t, { uploadError: new Error('Cloudinary unavailable') });
+  const error = Object.assign(new Error('Cloudinary authentication failed: api_secret=do-not-log'), { name: 'CloudinaryError', http_code: 401, code: 'AUTH_FAILED' });
+  const { baseUrl, calls } = await withServer(t, { uploadError: error });
   const response = await uploadRoom(baseUrl);
+  const payload = await response.json();
   assert.equal(response.status, 502);
+  assert.equal(payload.requestId, 'upload-reference-test');
+  assert.equal(payload.message, 'The image could not be uploaded to image storage. Please try again.');
   assert.equal(calls.create.length, 0);
   assert.equal(calls.destroy.length, 0);
+  const diagnostic = JSON.parse(calls.logs[0].message);
+  assert.equal(diagnostic.requestId, payload.requestId);
+  assert.equal(diagnostic.stage, 'cloudinary_upload');
+  assert.equal(diagnostic.errorName, 'CloudinaryError');
+  assert.equal(diagnostic.httpStatus, 401);
+  assert.equal(diagnostic.cloudinaryCode, 'AUTH_FAILED');
+  assert.match(diagnostic.message, /authentication failed/);
+  assert.doesNotMatch(diagnostic.message, /do-not-log/);
 });
 
 test('successful upload response without public_id is rejected and never persisted', async (t) => {
@@ -134,7 +147,10 @@ test('successful upload response without public_id is rejected and never persist
   const response = await uploadRoom(baseUrl);
   assert.equal(response.status, 502);
   assert.equal(calls.create.length, 0);
-  assert.equal(calls.destroy.length, 0);
+  assert.equal(calls.destroy.length, 1);
+  assert.match(calls.destroy[0].publicId, /^smart-wall-visualizer\/room-[0-9a-f-]{36}$/);
+  const diagnostic = JSON.parse(calls.logs[0].message);
+  assert.equal(diagnostic.stage, 'cloudinary_response_validation');
 });
 
 test('project creation failure after upload cleans up the exact returned asset id', async (t) => {
@@ -144,6 +160,8 @@ test('project creation failure after upload cleans up the exact returned asset i
   assert.equal(calls.destroy.length, 1);
   assert.equal(calls.destroy[0].publicId, 'smart-wall-visualizer/room-from-cloudinary');
   assert.equal(calls.destroy[0].params.type, 'authenticated');
+  const diagnostics = calls.logs.map((entry) => JSON.parse(entry.message));
+  assert.ok(diagnostics.some((entry) => entry.stage === 'mongodb_project_creation' && entry.requestId === 'upload-reference-test'));
 });
 
 test('image retrieval signs and streams the stored Cloudinary public_id with its image type', async (t) => {
