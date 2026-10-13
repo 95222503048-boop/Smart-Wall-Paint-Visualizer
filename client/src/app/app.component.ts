@@ -23,7 +23,7 @@ type Metrics = { totalUsers: number; uploadsLast24h: number; savedTrials: number
 export class AppComponent {
   readonly Math = Math;
   private http = inject(HttpClient);
-  private api = '/api';
+  private api = `${(window.__STILLROOM_CONFIG__?.apiBaseUrl || 'http://localhost:4000').replace(/\/+$/, '')}/api`;
   @ViewChild('paintCanvas') paintCanvas?: ElementRef<HTMLCanvasElement>;
   @ViewChild('canvasStage') canvasStage?: ElementRef<HTMLDivElement>;
   @ViewChild('photoInput') photoInput?: ElementRef<HTMLInputElement>;

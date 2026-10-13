@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "start": "ng serve --host 0.0.0.0 --proxy-config proxy.conf.json",
+    "prestart": "node scripts/write-runtime-config.mjs",
+    "start": "ng serve --host 0.0.0.0",
+    "prebuild": "node scripts/write-runtime-config.mjs",
     "build": "ng build"
   },
   "dependencies": {

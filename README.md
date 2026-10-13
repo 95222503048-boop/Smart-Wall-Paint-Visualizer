@@ -37,11 +37,11 @@ A web-only MEAN stack app for testing paint colours on photos of your own rooms.
 
 7. Open [http://localhost:4200](http://localhost:4200) and sign in with the seeded administrator account, or create a member account.
 
-The API listens on `http://localhost:4000`; `/api/health` reports only whether the service is alive. The Angular dev server proxies `/api` to port 4000 so the browser can use secure same-site cookies without cross-origin auth. Room photos upload to your Cloudinary account as authenticated assets; MongoDB stores only their Cloudinary identifier and project details. The API checks project ownership before it retrieves a photo and proxies image bytes to the browser. Set `MAX_UPLOAD_MB` to change the image size limit, `UPLOADS_PER_HOUR` to change the per-IP upload limit (default 10), and `CLIENT_ORIGIN` to a comma-separated list of exact browser origins if needed.
+The API listens on `http://localhost:4000`; `/api/health` reports only whether the service is alive. The Angular development client defaults to that local API; set `API_BASE_URL` before `npm run dev:client` if you need to point it at another API. Room photos upload to your Cloudinary account as authenticated assets; MongoDB stores only their Cloudinary identifier and project details. The API checks project ownership before it retrieves a photo and proxies image bytes to the browser. Set `MAX_UPLOAD_MB` to change the image size limit, `UPLOADS_PER_HOUR` to change the per-IP upload limit (default 10), and `CLIENT_ORIGIN` to a comma-separated list of exact browser origins if needed.
 
 ## Deploy the client to Vercel and the API to Render
 
-These deployment files are included: `client/vercel.json` configures the Angular production build, API proxy, and SPA fallback; the root `render.yaml` describes the Express web service. The Vercel rewrite currently points at `https://smart-wall-paint-visualizer-api.onrender.com`. If Render assigns a different service hostname, update both API rewrite destinations in `client/vercel.json` to that exact `https://<service-name>.onrender.com` URL before deploying Vercel.
+These deployment files are included: `client/vercel.json` configures the Angular production build and SPA fallback; the root `render.yaml` describes the Express web service. The client gets its API server origin from the `API_BASE_URL` environment variable at build time. Set it in Vercel to `https://still-room-ar37.onrender.com`.
 
 ### 1. Push the project to GitHub
 
@@ -55,7 +55,7 @@ Push the project folder to a GitHub repository. Confirm `server/.env` is not com
 ### 3. Deploy Express on Render
 
 1. In Render, create a **Blueprint** from the GitHub repository and use its root `render.yaml`, or create a Node web service manually with **Root Directory** `server`, **Build Command** `npm ci`, **Start Command** `npm start`, and **Health Check Path** `/api/health`.
-2. During Blueprint setup, provide your three Cloudinary values (`CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`) when Render asks for them. They are required before the API can start. Also set `MONGODB_URI` to the production Atlas connection string, `CLIENT_ORIGIN` to the Vercel domain you expect to use (for example `https://your-project.vercel.app`), and supply a unique `ADMIN_EMAIL` and `ADMIN_PASSWORD` of at least 12 characters. The Blueprint generates `JWT_SECRET`; retain it in Render and do not rotate it casually because rotation signs everyone out. Keep `NODE_ENV=production`, `COOKIE_SAME_SITE=Strict`, and `TRUST_PROXY=1` (the Blueprint includes these Render settings).
+2. During Blueprint setup, provide your three Cloudinary values (`CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`) when Render asks for them. They are required before the API can start. Also set `MONGODB_URI` to the production Atlas connection string, `CLIENT_ORIGIN` to your exact Vercel site origin (for example `https://your-project.vercel.app`), and supply a unique `ADMIN_EMAIL` and `ADMIN_PASSWORD` of at least 12 characters. The Blueprint generates `JWT_SECRET`; retain it in Render and do not rotate it casually because rotation signs everyone out. Keep `NODE_ENV=production`, `COOKIE_SAME_SITE=None`, and `TRUST_PROXY=1` (the Blueprint includes these Render settings). `SameSite=None` is needed because the browser sends API requests from the Vercel site to the separate Render domain; the cookies are marked Secure and CORS allows only the origin in `CLIENT_ORIGIN`.
 3. Deploy and copy the service's actual `onrender.com` URL. If the service name was changed or had to be renamed, put this URL into both destinations in `client/vercel.json` and push that edit. `render.yaml` uses the Render-provided `PORT` and binds Express to `0.0.0.0`.
 4. In MongoDB Atlas, allow connections from the Render service's outbound IP addresses where available. Use a dedicated database user with access only to this app's database. A broad `0.0.0.0/0` Atlas allowlist is less restrictive and should be avoided when your Render plan exposes addresses you can allowlist.
 
@@ -68,9 +68,10 @@ Push the project folder to a GitHub repository. Confirm `server/.env` is not com
 ### 5. Deploy Angular on Vercel
 
 1. Import the same GitHub repository as a Vercel project and set **Root Directory** to `client`.
-2. The included `client/vercel.json` sets the production build command and Angular output directory (`dist/smart-wall-visualizer/browser`), proxies `/api` to Render, and falls back to `index.html` for the single-page app. No API URL environment variable is needed.
-3. Deploy Vercel, then set the Render `CLIENT_ORIGIN` to the exact production Vercel URL shown in Vercel's project domains. If you attach a custom domain, add that exact origin too (comma-separated) in Render and redeploy the API. Keep the Vercel rewrite on the same origin so the browser's HttpOnly and CSRF cookies remain first-party. Vercel preview URLs are different origins; add a preview URL to `CLIENT_ORIGIN` temporarily if you need to test sign-in from a preview deployment.
-4. In Vercel deployment settings, verify the project root is `client` and production builds use the committed `vercel.json`. The API health check should be available at `https://your-project.vercel.app/api/health` after both deploys finish.
+2. In Vercel **Project Settings → Environment Variables**, add `API_BASE_URL` with value `https://still-room-ar37.onrender.com` (no trailing slash). Apply it to Production and, if needed, Preview. This is a public server address, not a secret. Do not set Cloudinary credentials in Vercel.
+3. The included build script reads `API_BASE_URL` and puts it into the generated client runtime config. `client/vercel.json` builds Angular into `dist/smart-wall-visualizer/browser` and falls back to `index.html` for client-side routes. Save the variable, then deploy or redeploy so the new value is included in the site.
+4. Copy the exact Vercel production origin from **Project → Domains**. In Render **Environment**, set `CLIENT_ORIGIN` to that origin and redeploy the API. If you use a custom domain, use that exact origin instead. To sign in from a Vercel preview, add the preview origin to Render's comma-separated `CLIENT_ORIGIN` temporarily.
+5. Verify the API at `https://still-room-ar37.onrender.com/api/health`; expect `{"ok":true}`. Then open your Vercel site and test register/login and upload. The browser must allow the secure cross-site cookies used between Vercel and Render; if your browser blocks third-party cookies, use a same-site API proxy/domain for production.
 
 ### 6. Seed the administrator
 
@@ -82,10 +83,10 @@ Images are stored in the Cloudinary account configured on the Render API, rather
 
 ### Verify the deployment
 
-- Open `https://<vercel-domain>/api/health`; expect `{"ok":true}`.
-- Register a member and sign in; cookies should stay on the Vercel domain because `/api` is proxied.
+- Open `https://still-room-ar37.onrender.com/api/health`; expect `{"ok":true}`.
+- Register a member and sign in. If sign-in fails, check that `API_BASE_URL` is set in Vercel, `CLIENT_ORIGIN` exactly matches your site origin in Render, and the browser allows cross-site cookies.
 - Upload a JPG/PNG, refresh, open the room, save a paint trial, and check the admin screen using the seeded administrator.
-- If API calls return CORS errors, check that Render `CLIENT_ORIGIN` exactly matches the browser's production origin (scheme and hostname, no path or trailing slash). If the Vercel rewrite returns a 404/502, check the Render hostname in both `client/vercel.json` rewrite destinations and the Render service logs.
+- If API calls return CORS errors, check that Render `CLIENT_ORIGIN` exactly matches the browser's production origin (scheme and hostname, no path or trailing slash) and that `COOKIE_SAME_SITE=None` is active. If requests go to the wrong server, check the Vercel `API_BASE_URL` value and redeploy.
 
 ### Roles and palette access
 
