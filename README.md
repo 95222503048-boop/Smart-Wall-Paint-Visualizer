@@ -39,6 +39,14 @@ A web-only MEAN stack app for testing paint colours on photos of your own rooms.
 
 The API listens on `http://localhost:4000`; `/api/health` reports only whether the service is alive. The Angular development proxy forwards relative `/api` requests to the local API at port 4000. Room photos upload to your Cloudinary account as authenticated assets; MongoDB stores only their Cloudinary identifier and project details. The API checks project ownership before it retrieves a photo and proxies image bytes to the browser. Set `MAX_UPLOAD_MB` to change the image size limit, `UPLOADS_PER_HOUR` to change the per-IP upload limit (default 10), and `CLIENT_ORIGIN` to a comma-separated list of exact browser origins if needed.
 
+Run the API regression tests with `npm run test:server` from the repository root (or `npm test` from `server`). They use mocked Cloudinary and MongoDB models and do not need credentials or modify production data.
+
+### Existing projects with a missing Cloudinary public ID
+
+New uploads save the exact `public_id` returned by Cloudinary. The project schema still requires a non-empty identifier, so an incomplete Cloudinary response cannot create a project. If MongoDB project creation fails after Cloudinary accepts an upload, the API attempts to remove that exact returned asset. If Cloudinary deletion fails, it logs the cleanup failure for operator review.
+
+Older records that already have an empty or missing `cloudinaryPublicId` are handled explicitly: opening the image returns HTTP 410 with a re-upload message instead of calling Cloudinary with an empty value; saving edits returns HTTP 409; and owner-initiated project deletion skips Cloudinary and removes the MongoDB record with a warning in the response. The app does not guess or fabricate IDs and does not perform a bulk migration. To recover a legacy photo, upload the original again as a new room project. Back up Atlas before any manual recovery work; only associate an asset with a project when you can verify the exact Cloudinary `public_id` and ownership.
+
 ## Deploy the client to Vercel and the API to Render
 
 These deployment files are included: `client/vercel.json` configures the Angular production build, forwards `/api` requests to `https://still-room-ar37.onrender.com`, and provides the SPA fallback; the root `render.yaml` describes the Express web service. Angular uses relative `/api` paths in both local development and production, so no API URL variable is needed in Vercel.
@@ -124,7 +132,7 @@ All API routes are under `/api`. Authenticated routes use the HttpOnly session c
 | `GET /colors`, `POST /colors`, `PATCH /colors/:id`, `DELETE /colors/:id` | Paint palette; writes require admin |
 | `GET /admin/users`, `PATCH /admin/users/:id/role`, `GET /admin/projects`, `GET /admin/analytics` | Admin operations |
 
-Project documents store owner, room photo metadata and trials with up to 12 independently coloured wall layers. Each layer stores normalized brush/polygon points or a compact AI segmentation mask and its own appearance settings. Original image files are stored on the API server’s local filesystem and are served only through the authenticated owner/admin image route. MongoDB stores user accounts, project/trial data, paint colors, and session records.
+Project documents store owner, room photo metadata, the exact Cloudinary `public_id`, and trials with up to 12 independently coloured wall layers. Each layer stores normalized brush/polygon points or a compact AI segmentation mask and its own appearance settings. Original image files are stored in Cloudinary and are streamed only through the authenticated owner/admin image route. MongoDB stores user accounts, project/trial data, paint colors, and session records.
 
 ## Production notes
 

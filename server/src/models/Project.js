@@ -17,7 +17,7 @@ const trialSchema = new mongoose.Schema({
 const projectSchema = new mongoose.Schema({
   owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   title: { type: String, required: true, trim: true, maxlength: 120 },
-  cloudinaryPublicId: { type: String, required: true },
+  cloudinaryPublicId: { type: String, required: true, trim: true, minlength: 1, maxlength: 512 },
   mimeType: { type: String, enum: ['image/jpeg', 'image/png'], required: true },
   width: Number,
   height: Number,
